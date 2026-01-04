@@ -7,23 +7,10 @@ from datetime import datetime
 # --- KONFIGURACJA ---
 st.set_page_config(page_title="Sklep Magazynier Pro", layout="wide", page_icon="⚙️")
 
-# --- STYLE CSS ---
-st.markdown("""
-    <style>
-    [data-testid="stMetric"] {
-        background-color: rgba(128, 128, 128, 0.1);
-        border: 1px solid rgba(128, 128, 128, 0.2);
-        padding: 15px;
-        border-radius: 10px;
-    }
-    .stButton>button { width: 100%; }
-    </style>
-    """, unsafe_allow_html=True)
-
 # --- BAZA DANYCH ---
 def get_connection():
     conn = sqlite3.connect('sklep_final.db', check_same_thread=False)
-    conn.execute("PRAGMA foreign_keys = ON") # Włączenie wsparcia dla kluczy obcych
+    conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
 def init_db():
@@ -43,28 +30,63 @@ def init_db():
 conn = init_db()
 
 # --- NAWIGACJA ---
-menu = st.sidebar.radio("Nawigacja", ["📊 Dashboard", "📦 Magazyn", "💸 Sprzedaż", "📂 Kategorie", "⚙️ Usuwanie i Porządki"])
+menu = st.sidebar.radio("Nawigacja", ["📊 Dashboard", "📦 Magazyn", "💸 Sprzedaż", "📂 Kategorie", "⚙️ Zarządzanie"])
 
-# --- MODUŁ 1: DASHBOARD ---
+# --- MODUŁ 1: DASHBOARD (NOWE STATYSTYKI) ---
 if menu == "📊 Dashboard":
-    st.title("Statystyki Sklepu")
-    df_p = pd.read_sql_query("SELECT p.nazwa, p.liczba, p.cena, k.nazwa as kategoria FROM produkty p JOIN kategoria k ON p.kategoria_id = k.id", conn)
-    df_s = pd.read_sql_query("SELECT suma FROM sprzedaz", conn)
-    
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Suma sprzedaży", f"{df_s['suma'].sum():,.2f} zł")
-    c2.metric("Wartość magazynu", f"{(df_p['liczba'] * df_p['cena']).sum():,.2f} zł")
-    c3.metric("Liczba produktów", len(df_p))
-    
-    if not df_p.empty:
-        fig = px.pie(df_p, values='liczba', names='kategoria', title="Ilość towaru wg kategorii")
-        st.plotly_chart(fig, use_container_width=True)
+    st.title("Statystyki i Bilans")
 
-# --- MODUŁ 2: MAGAZYN ---
+    # 1. Pobranie danych o produktach i sprzedaży
+    df_p = pd.read_sql_query("SELECT id, nazwa, liczba, cena FROM produkty", conn)
+    df_s = pd.read_sql_query("SELECT produkt_id, ilosc FROM sprzedaz", conn)
+
+    if not df_p.empty:
+        # Obliczanie ile sprzedano każdego produktu
+        sprzedane_suma = df_s.groupby('produkt_id')['ilosc'].sum().reset_index()
+        sprzedane_suma.columns = ['id', 'Sprzedano']
+
+        # Łączenie danych (Bilans)
+        bilans = pd.merge(df_p, sprzedane_suma, on='id', how='left').fillna(0)
+        bilans['Sprzedano'] = bilans['Sprzedano'].astype(int)
+        
+        # Obliczenie stanu początkowego (ile było = obecny stan + to co sprzedano)
+        bilans['Łącznie było'] = bilans['liczba'] + bilans['Sprzedano']
+        bilans = bilans.rename(columns={'nazwa': 'Produkt', 'liczba': 'Zostało (Stan)'})
+
+        # Wyświetlenie metryk ogólnych
+        total_income = pd.read_sql_query("SELECT SUM(suma) FROM sprzedaz", conn).iloc[0,0] or 0
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Całkowity Przychód", f"{total_income:,.2f} zł")
+        c2.metric("Produkty w magazynie", bilans['Zostało (Stan)'].sum())
+        c3.metric("Suma sprzedanych sztuk", bilans['Sprzedano'].sum())
+
+        st.divider()
+        
+        # --- TABELA BILANSU ---
+        st.subheader("📋 Pełny Bilans Towarowy")
+        st.write("Zestawienie: ile wprowadzono, ile sprzedano i ile aktualnie znajduje się w magazynie.")
+        
+        # Wyświetlamy najważniejsze kolumny
+        st.dataframe(
+            bilans[['Produkt', 'Łącznie było', 'Sprzedano', 'Zostało (Stan)']], 
+            use_container_width=True, 
+            hide_index=True
+        )
+
+        # Wykres porównawczy
+        st.subheader("📈 Wykres Ruchu Towarów")
+        fig = px.bar(bilans, x='Produkt', y=['Sprzedano', 'Zostało (Stan)'], 
+                     title="Proporcja Sprzedaży do Zapasów",
+                     barmode='group',
+                     color_discrete_map={'Sprzedano': '#EF553B', 'Zostało (Stan)': '#00CC96'})
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Baza produktów jest pusta.")
+
+# --- POZOSTAŁE MODUŁY (Magazyn, Sprzedaż, Kategorie, Zarządzanie - pozostają jak w v4.5) ---
 elif menu == "📦 Magazyn":
     st.title("Zarządzanie Towarem")
     df_kat = pd.read_sql_query("SELECT * FROM kategoria", conn)
-    
     with st.expander("➕ Dodaj nowy produkt"):
         if not df_kat.empty:
             with st.form("add_p"):
@@ -78,13 +100,10 @@ elif menu == "📦 Magazyn":
                     conn.cursor().execute("INSERT INTO produkty (nazwa, liczba, cena, kategoria_id) VALUES (?,?,?,?)", (n,l,p,int(kid)))
                     conn.commit()
                     st.rerun()
-        else: st.warning("Brak kategorii!")
-
     st.subheader("Aktualny stan")
     df_view = pd.read_sql_query("SELECT p.id, p.nazwa, p.liczba, p.cena, k.nazwa as kategoria FROM produkty p JOIN kategoria k ON p.kategoria_id = k.id", conn)
     st.dataframe(df_view, use_container_width=True, hide_index=True)
 
-# --- MODUŁ 3: SPRZEDAŻ ---
 elif menu == "💸 Sprzedaż":
     st.title("Punkt Sprzedaży")
     df_stock = pd.read_sql_query("SELECT id, nazwa, liczba, cena FROM produkty WHERE liczba > 0", conn)
@@ -104,9 +123,8 @@ elif menu == "💸 Sprzedaż":
                     st.rerun()
                 else: st.error("Za mało towaru!")
 
-# --- MODUŁ 4: KATEGORIE ---
 elif menu == "📂 Kategorie":
-    st.title("Zarządzanie Kategoriami")
+    st.title("Kategorie")
     with st.form("add_k"):
         nowa_k = st.text_input("Nowa kategoria")
         if st.form_submit_button("Dodaj"):
@@ -115,37 +133,28 @@ elif menu == "📂 Kategorie":
             st.rerun()
     st.table(pd.read_sql_query("SELECT * FROM kategoria", conn))
 
-# --- MODUŁ 5: USUWANIE (NOWOŚĆ) ---
-elif menu == "⚙️ Usuwanie i Porządki":
-    st.title("Usuwanie danych z bazy")
-    
+elif menu == "⚙️ Zarządzanie":
+    st.title("Usuwanie danych")
     col_u1, col_u2 = st.columns(2)
-    
     with col_u1:
         st.subheader("🗑️ Usuń Produkt")
         df_p_del = pd.read_sql_query("SELECT id, nazwa FROM produkty", conn)
         if not df_p_del.empty:
-            p_to_del = st.selectbox("Wybierz produkt do usunięcia", df_p_del['nazwa'].tolist())
+            p_to_del = st.selectbox("Wybierz produkt", df_p_del['nazwa'].tolist())
             if st.button("USUŃ PRODUKT", type="primary"):
                 pid = df_p_del[df_p_del['nazwa'] == p_to_del]['id'].values[0]
                 conn.cursor().execute("DELETE FROM produkty WHERE id = ?", (int(pid),))
                 conn.commit()
-                st.success(f"Usunięto: {p_to_del}")
                 st.rerun()
-        else: st.info("Brak produktów")
-
     with col_u2:
         st.subheader("🗑️ Usuń Kategorię")
         df_k_del = pd.read_sql_query("SELECT id, nazwa FROM kategoria", conn)
         if not df_k_del.empty:
             k_to_del = st.selectbox("Wybierz kategorię", df_k_del['nazwa'].tolist())
-            st.warning("⚠️ Usunięcie kategorii usunie również wszystkie produkty do niej przypisane!")
             if st.button("USUŃ KATEGORIĘ", type="primary"):
                 kid = df_k_del[df_k_del['nazwa'] == k_to_del]['id'].values[0]
                 conn.cursor().execute("DELETE FROM kategoria WHERE id = ?", (int(kid),))
                 conn.commit()
-                st.success(f"Usunięto kategorię i powiązane produkty")
                 st.rerun()
-        else: st.info("Brak kategorii")
 
 conn.close()
