@@ -1,131 +1,150 @@
 import streamlit as st
+import sqlite3
 import pandas as pd
-from supabase import create_client, Client
 import plotly.express as px
 
+# --- FUNKCJE BAZODANOWE ---
+def get_connection():
+    conn = sqlite3.connect('sklep.db', check_same_thread=False)
+    return conn
+
+def inicjalizuj_baze():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS kategoria (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nazwa TEXT NOT NULL,
+            opis TEXT
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS produkty (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nazwa TEXT NOT NULL,
+            liczba INTEGER,
+            cena REAL,
+            kategoria_id INTEGER,
+            FOREIGN KEY (kategoria_id) REFERENCES kategoria (id)
+        )
+    ''')
+    conn.commit()
+    return conn
+
 # --- KONFIGURACJA STRONY ---
-st.set_page_config(page_title="System Magazynowy Pro", layout="wide")
+st.set_page_config(page_title="Magazyn v2.0", layout="wide")
+conn = inicjalizuj_baze()
 
-# Bezpieczne pobieranie danych logowania
-try:
-    url: str = st.secrets["SUPABASE_URL"]
-    key: str = st.secrets["SUPABASE_KEY"]
-    supabase: Client = create_client(url, key)
-except Exception as e:
-    st.error("Błąd: Brak kluczy Supabase w st.secrets!")
-    st.stop()
+# --- CSS DLA LEPSZEGO WYGLĄDU ---
+st.markdown("""
+    <style>
+    .main { background-color: #f5f7f9; }
+    .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+    </style>
+    """, unsafe_allow_html=True)
 
-# --- FUNKCJE DO POBIERANIA DANYCH ---
-def get_categories():
-    try:
-        res = supabase.table("kategoria").select("id, nazwa").execute()
-        return {item['nazwa']: item['id'] for item in res.data}
-    except:
-        return {}
+st.title("📦 System Zarządzania Sklepem (SQLite)")
 
-def get_products_df():
-    try:
-        # Pobieramy produkty wraz z nazwą kategorii
-        res = supabase.table("produkty").select("id, nazwa, liczba, cena, kategoria(nazwa)").execute()
-        if not res.data:
-            return pd.DataFrame()
-        
-        # Przekształcenie danych do płaskiej tabeli (ważne przy Joinach w Supabase)
-        data = []
-        for item in res.data:
-            data.append({
-                "ID": item["id"],
-                "Produkt": item["nazwa"],
-                "Ilość": item["liczba"],
-                "Cena (zł)": item["cena"],
-                "Kategoria": item["kategoria"]["nazwa"] if item.get("kategoria") else "Nieprzypisany",
-                "Wartość (zł)": item["liczba"] * item["cena"]
-            })
-        return pd.DataFrame(data)
-    except Exception as e:
-        st.error(f"Błąd pobierania produktów: {e}")
-        return pd.DataFrame()
+# --- BOCZNY PANEL (Pobieranie kategorii do list wyboru) ---
+def pobierz_kategorie():
+    df_kat = pd.read_sql_query("SELECT * FROM kategoria", conn)
+    return df_kat
 
-# --- MENU GŁÓWNE ---
-st.title("📦 System Zarządzania Magazynem")
+# --- TABS ---
+tab_stats, tab_add_p, tab_add_k, tab_manage = st.tabs([
+    "📊 Dashboard", "🍎 Produkty", "📂 Kategorie", "⚙️ Administracja"
+])
 
-tabs = st.tabs(["📊 Statystyki", "🛒 Produkty", "📂 Kategorie", "⚙️ Zarządzanie"])
-
-# --- TAB: STATYSTYKI ---
-with tabs[0]:
-    df = get_products_df()
+# --- TAB 1: DASHBOARD ---
+with tab_stats:
+    query = '''
+        SELECT p.id, p.nazwa as Produkt, p.liczba as Ilość, p.cena as Cena, k.nazwa as Kategoria 
+        FROM produkty p
+        JOIN kategoria k ON p.kategoria_id = k.id
+    '''
+    df = pd.read_sql_query(query, conn)
+    
     if not df.empty:
+        df['Wartość'] = df['Ilość'] * df['Cena']
+        
         c1, c2, c3 = st.columns(3)
-        c1.metric("Wartość magazynu", f"{df['Wartość (zł)'].sum():.2f} zł")
-        c2.metric("Liczba produktów", len(df))
-        c3.metric("Łączna ilość sztuk", df['Ilość'].sum())
-
-        st.divider()
-        col_left, col_right = st.columns(2)
+        c1.metric("Łączna wartość", f"{df['Wartość'].sum():,.2f} zł")
+        c2.metric("Liczba pozycji", len(df))
+        c3.metric("Stan magazynowy", int(df['Ilość'].sum()))
         
-        with col_left:
-            fig = px.pie(df, values='Wartość (zł)', names='Kategoria', title="Podział wartości wg kategorii")
-            st.plotly_chart(fig, use_container_width=True)
-            
-        with col_right:
-            # Alert o niskim stanie
-            low_stock = df[df['Ilość'] < 5]
-            if not low_stock.empty:
-                st.warning("⚠️ Produkty na wyczerpaniu (poniżej 5 sztuk):")
-                st.dataframe(low_stock[['Produkt', 'Ilość']], hide_index=True)
+        col_l, col_r = st.columns(2)
+        with col_l:
+            fig1 = px.pie(df, values='Wartość', names='Kategoria', title="Udział wartościowy kategorii")
+            st.plotly_chart(fig1, use_container_width=True)
+        with col_r:
+            fig2 = px.bar(df, x='Produkt', y='Ilość', color='Kategoria', title="Ilość produktów")
+            st.plotly_chart(fig2, use_container_width=True)
     else:
-        st.info("Brak danych do wyświetlenia statystyk.")
+        st.info("Baza jest pusta. Dodaj kategorie i produkty!")
 
-# --- TAB: PRODUKTY (DODAWANIE I LISTA) ---
-with tabs[1]:
-    st.header("Lista produktów")
-    df = get_products_df()
-    if not df.empty:
-        st.dataframe(df, use_container_width=True, hide_index=True)
+# --- TAB 2: DODAWANIE PRODUKTÓW ---
+with tab_add_p:
+    st.header("Dodaj nowy produkt")
+    df_k = pobierz_kategorie()
     
-    st.divider()
-    st.subheader("Dodaj nowy produkt")
-    kat_dict = get_categories()
-    
-    if kat_dict:
-        with st.form("add_prod", clear_on_submit=True):
-            c1, c2, c3 = st.columns([2, 1, 1])
-            name = c1.text_input("Nazwa produktu")
-            qty = c2.number_input("Ilość", min_value=0)
-            price = c3.number_input("Cena", min_value=0.0)
-            cat_name = st.selectbox("Kategoria", options=list(kat_dict.keys()))
+    if not df_k.empty:
+        with st.form("form_produkt", clear_on_submit=True):
+            col1, col2 = st.columns(2)
+            nazwa_p = col1.text_input("Nazwa produktu")
+            kat_p = col2.selectbox("Wybierz kategorię", options=df_k['nazwa'].tolist())
             
-            if st.form_submit_button("Dodaj produkt"):
-                if name:
-                    supabase.table("produkty").insert({
-                        "nazwa": name, "liczba": qty, "cena": price, "kategoria_id": kat_dict[cat_name]
-                    }).execute()
-                    st.success("Produkt dodany!")
+            col3, col4 = st.columns(2)
+            ilosc_p = col3.number_input("Ilość", min_value=0, step=1)
+            cena_p = col4.number_input("Cena (zł)", min_value=0.0, format="%.2f")
+            
+            if st.form_submit_button("Zapisz produkt"):
+                if nazwa_p:
+                    id_kat = df_k[df_k['nazwa'] == kat_p]['id'].values[0]
+                    cur = conn.cursor()
+                    cur.execute("INSERT INTO produkty (nazwa, liczba, cena, kategoria_id) VALUES (?, ?, ?, ?)",
+                                (nazwa_p, ilosc_p, cena_p, int(id_kat)))
+                    conn.commit()
+                    st.success(f"Dodano produkt: {nazwa_p}")
                     st.rerun()
     else:
-        st.error("Najpierw dodaj kategorię!")
+        st.warning("Najpierw musisz dodać kategorię!")
 
-# --- TAB: KATEGORIE ---
-with tabs[2]:
-    st.header("Kategorie")
-    with st.form("add_cat"):
-        new_cat = st.text_input("Nazwa nowej kategorii")
-        if st.form_submit_button("Dodaj"):
-            if new_cat:
-                supabase.table("kategoria").insert({"nazwa": new_cat}).execute()
+# --- TAB 3: DODAWANIE KATEGORII ---
+with tab_add_k:
+    st.header("Zarządzaj kategoriami")
+    with st.form("form_kat", clear_on_submit=True):
+        n_kat = st.text_input("Nazwa nowej kategorii")
+        o_kat = st.text_area("Opis")
+        if st.form_submit_button("Dodaj kategorię"):
+            if n_kat:
+                cur = conn.cursor()
+                cur.execute("INSERT INTO kategoria (nazwa, opis) VALUES (?, ?)", (n_kat, o_kat))
+                conn.commit()
+                st.success("Kategoria dodana!")
                 st.rerun()
+    
+    st.subheader("Istniejące kategorie")
+    st.table(df_k)
 
-# --- TAB: ZARZĄDZANIE ---
-with tabs[3]:
-    st.header("Usuwanie i Eksport")
-    df = get_products_df()
-    if not df.empty:
-        id_del = st.number_input("Podaj ID produktu do usunięcia", min_value=1, step=1)
-        if st.button("USUŃ DEFINITYWNIE", type="primary"):
-            supabase.table("produkty").delete().eq("id", id_del).execute()
-            st.success("Usunięto!")
-            st.rerun()
+# --- TAB 4: ADMINISTRACJA ---
+with tab_manage:
+    st.header("Podgląd i usuwanie")
+    df_all = pd.read_sql_query(query, conn) if not df_k.empty else pd.DataFrame()
+    
+    if not df_all.empty:
+        st.dataframe(df_all, use_container_width=True, hide_index=True)
         
+        id_do_usu_p = st.number_input("Podaj ID produktu do usunięcia", min_value=1, step=1)
+        if st.button("Usuń wybrany produkt", type="primary"):
+            cur = conn.cursor()
+            cur.execute("DELETE FROM produkty WHERE id = ?", (id_do_usu_p,))
+            conn.commit()
+            st.rerun()
+            
         st.divider()
-        csv = df.to_csv(index=False).encode('utf-8')
-        st.download_button("Pobierz bazę jako CSV", csv, "magazyn.csv", "text/csv")
+        csv = df_all.to_csv(index=False).encode('utf-8')
+        st.download_button("📥 Pobierz raport CSV", csv, "magazyn.csv", "text/csv")
+    else:
+        st.info("Brak danych.")
+
+conn.close()
