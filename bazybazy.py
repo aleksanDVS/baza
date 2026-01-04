@@ -5,7 +5,7 @@ import plotly.express as px
 from datetime import datetime
 
 # --- KONFIGURACJA ---
-st.set_page_config(page_title="Sklep & Magazyn Pro", layout="wide", page_icon="💰")
+st.set_page_config(page_title="Sklep Magazynier Pro", layout="wide", page_icon="⚙️")
 
 # --- STYLE CSS ---
 st.markdown("""
@@ -16,12 +16,15 @@ st.markdown("""
         padding: 15px;
         border-radius: 10px;
     }
+    .stButton>button { width: 100%; }
     </style>
     """, unsafe_allow_html=True)
 
 # --- BAZA DANYCH ---
 def get_connection():
-    return sqlite3.connect('sklep_v4.db', check_same_thread=False)
+    conn = sqlite3.connect('sklep_final.db', check_same_thread=False)
+    conn.execute("PRAGMA foreign_keys = ON") # Włączenie wsparcia dla kluczy obcych
+    return conn
 
 def init_db():
     conn = get_connection()
@@ -29,112 +32,120 @@ def init_db():
     cur.execute('CREATE TABLE IF NOT EXISTS kategoria (id INTEGER PRIMARY KEY AUTOINCREMENT, nazwa TEXT UNIQUE)')
     cur.execute('''CREATE TABLE IF NOT EXISTS produkty (
                     id INTEGER PRIMARY KEY AUTOINCREMENT, nazwa TEXT, liczba INTEGER, 
-                    cena REAL, kategoria_id INTEGER, FOREIGN KEY(kategoria_id) REFERENCES kategoria(id))''')
-    # NOWA TABELA: Sprzedaż
+                    cena REAL, kategoria_id INTEGER, 
+                    FOREIGN KEY(kategoria_id) REFERENCES kategoria(id) ON DELETE CASCADE)''')
     cur.execute('''CREATE TABLE IF NOT EXISTS sprzedaz (
                     id INTEGER PRIMARY KEY AUTOINCREMENT, data TEXT, produkt_id INTEGER, 
-                    ilosc INTEGER, suma REAL, FOREIGN KEY(produkt_id) REFERENCES produkty(id))''')
+                    ilosc INTEGER, suma REAL)''')
     conn.commit()
     return conn
 
 conn = init_db()
 
-# --- FUNKCJE POMOCNICZE ---
-def get_status(ilosc):
-    if ilosc > 10: return "🟢 Dostępny"
-    if ilosc > 0: return "🟡 Niski stan"
-    return "🔴 Brak"
-
 # --- NAWIGACJA ---
-menu = st.sidebar.radio("Menu", ["📊 Analiza Sprzedaży", "📦 Magazyn", "💸 Punkt Sprzedaży", "📂 Kategorie"])
+menu = st.sidebar.radio("Nawigacja", ["📊 Dashboard", "📦 Magazyn", "💸 Sprzedaż", "📂 Kategorie", "⚙️ Usuwanie i Porządki"])
 
-# --- MODUŁ 1: DASHBOARD (Z ROZBUDOWANĄ ANALIZĄ) ---
-if menu == "📊 Analiza Sprzedaży":
-    st.title("Panel Analityczny")
+# --- MODUŁ 1: DASHBOARD ---
+if menu == "📊 Dashboard":
+    st.title("Statystyki Sklepu")
+    df_p = pd.read_sql_query("SELECT p.nazwa, p.liczba, p.cena, k.nazwa as kategoria FROM produkty p JOIN kategoria k ON p.kategoria_id = k.id", conn)
+    df_s = pd.read_sql_query("SELECT suma FROM sprzedaz", conn)
     
-    # Pobieranie danych o sprzedaży
-    query_sales = '''SELECT s.data, p.nazwa, s.ilosc, s.suma 
-                     FROM sprzedaz s JOIN produkty p ON s.produkt_id = p.id'''
-    df_sales = pd.read_sql_query(query_sales, conn)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Suma sprzedaży", f"{df_s['suma'].sum():,.2f} zł")
+    c2.metric("Wartość magazynu", f"{(df_p['liczba'] * df_p['cena']).sum():,.2f} zł")
+    c3.metric("Liczba produktów", len(df_p))
+    
+    if not df_p.empty:
+        fig = px.pie(df_p, values='liczba', names='kategoria', title="Ilość towaru wg kategorii")
+        st.plotly_chart(fig, use_container_width=True)
 
-    if not df_sales.empty:
-        c1, c2 = st.columns(2)
-        c1.metric("Całkowity Przychód", f"{df_sales['suma'].sum():,.2f} zł")
-        c2.metric("Sprzedane Produkty", df_sales['ilosc'].sum())
-
-        st.subheader("Historia Przychodów")
-        df_sales['data'] = pd.to_datetime(df_sales['data'])
-        fig_trend = px.line(df_sales.groupby('data')['suma'].sum().reset_index(), 
-                            x='data', y='suma', title="Trend sprzedaży (PLN)")
-        st.plotly_chart(fig_trend, use_container_width=True)
-    else:
-        st.info("Brak zarejestrowanej sprzedaży.")
-
-# --- MODUŁ 2: MAGAZYN (ZE STATUSAMI) ---
+# --- MODUŁ 2: MAGAZYN ---
 elif menu == "📦 Magazyn":
-    st.title("Stan Magazynowy")
-    query = '''SELECT p.id, p.nazwa, p.liczba, p.cena, k.nazwa as kategoria 
-               FROM produkty p JOIN kategoria k ON p.kategoria_id = k.id'''
-    df_p = pd.read_sql_query(query, conn)
+    st.title("Zarządzanie Towarem")
+    df_kat = pd.read_sql_query("SELECT * FROM kategoria", conn)
     
-    if not df_p.empty:
-        # DODAWANIE STATUSÓW
-        df_p['Status'] = df_p['liczba'].apply(get_status)
-        st.dataframe(df_p[['Status', 'nazwa', 'liczba', 'cena', 'kategoria']], use_container_width=True)
-    
-    # Formularz dodawania (jak wcześniej)
-    st.divider()
-    st.subheader("Dodaj nowy produkt")
-    df_k = pd.read_sql_query("SELECT * FROM kategoria", conn)
-    with st.form("add_p"):
-        name = st.text_input("Nazwa")
-        cat = st.selectbox("Kategoria", df_k['nazwa'].tolist() if not df_k.empty else [])
-        col1, col2 = st.columns(2)
-        qty = col1.number_input("Ilość", min_value=1)
-        prc = col2.number_input("Cena zakupu", min_value=0.0)
-        if st.form_submit_button("Dodaj"):
-            kid = df_k[df_k['nazwa'] == cat]['id'].values[0]
-            conn.cursor().execute("INSERT INTO produkty (nazwa, liczba, cena, kategoria_id) VALUES (?,?,?,?)", 
-                                 (name, qty, prc, int(kid)))
-            conn.commit()
-            st.rerun()
-
-# --- MODUŁ 3: PUNKT SPRZEDAŻY (NOWOŚĆ) ---
-elif menu == "💸 Punkt Sprzedaży":
-    st.title("Nowa Sprzedaż")
-    
-    df_p = pd.read_sql_query("SELECT id, nazwa, liczba, cena FROM produkty WHERE liczba > 0", conn)
-    
-    if not df_p.empty:
-        with st.form("sale_form"):
-            prod_choice = st.selectbox("Wybierz produkt", options=df_p['nazwa'].tolist())
-            ilosc_sell = st.number_input("Ilość do sprzedaży", min_value=1, step=1)
-            
-            if st.form_submit_button("Potwierdź Sprzedaż"):
-                row = df_p[df_p['nazwa'] == prod_choice].iloc[0]
-                if ilosc_sell <= row['liczba']:
-                    suma = ilosc_sell * row['cena']
-                    cur = conn.cursor()
-                    # 1. Odejmij z magazynu
-                    cur.execute("UPDATE produkty SET liczba = liczba - ? WHERE id = ?", (ilosc_sell, int(row['id'])))
-                    # 2. Dodaj do tabeli sprzedaż
-                    cur.execute("INSERT INTO sprzedaz (data, produkt_id, ilosc, suma) VALUES (?,?,?,?)",
-                                (datetime.now().strftime("%Y-%m-%d"), int(row['id']), ilosc_sell, suma))
+    with st.expander("➕ Dodaj nowy produkt"):
+        if not df_kat.empty:
+            with st.form("add_p"):
+                n = st.text_input("Nazwa")
+                k = st.selectbox("Kategoria", df_kat['nazwa'].tolist())
+                c1, c2 = st.columns(2)
+                l = c1.number_input("Ilość", min_value=1)
+                p = c2.number_input("Cena", min_value=0.0)
+                if st.form_submit_button("Zapisz"):
+                    kid = df_kat[df_kat['nazwa'] == k]['id'].values[0]
+                    conn.cursor().execute("INSERT INTO produkty (nazwa, liczba, cena, kategoria_id) VALUES (?,?,?,?)", (n,l,p,int(kid)))
                     conn.commit()
-                    st.success(f"Sprzedano {ilosc_sell}x {prod_choice} za {suma:.2f} zł")
-                else:
-                    st.error("Nie ma tyle towaru w magazynie!")
-    else:
-        st.warning("Brak produktów w magazynie do sprzedania.")
+                    st.rerun()
+        else: st.warning("Brak kategorii!")
+
+    st.subheader("Aktualny stan")
+    df_view = pd.read_sql_query("SELECT p.id, p.nazwa, p.liczba, p.cena, k.nazwa as kategoria FROM produkty p JOIN kategoria k ON p.kategoria_id = k.id", conn)
+    st.dataframe(df_view, use_container_width=True, hide_index=True)
+
+# --- MODUŁ 3: SPRZEDAŻ ---
+elif menu == "💸 Sprzedaż":
+    st.title("Punkt Sprzedaży")
+    df_stock = pd.read_sql_query("SELECT id, nazwa, liczba, cena FROM produkty WHERE liczba > 0", conn)
+    if not df_stock.empty:
+        with st.form("sale"):
+            prod = st.selectbox("Produkt", df_stock['nazwa'].tolist())
+            ile = st.number_input("Ile sztuk", min_value=1)
+            if st.form_submit_button("Sprzedaj"):
+                row = df_stock[df_stock['nazwa'] == prod].iloc[0]
+                if ile <= row['liczba']:
+                    suma = ile * row['cena']
+                    cur = conn.cursor()
+                    cur.execute("UPDATE produkty SET liczba = liczba - ? WHERE id = ?", (ile, int(row['id'])))
+                    cur.execute("INSERT INTO sprzedaz (data, produkt_id, ilosc, suma) VALUES (?,?,?,?)", (datetime.now().strftime("%Y-%m-%d"), int(row['id']), ile, suma))
+                    conn.commit()
+                    st.success(f"Sprzedano! Wartość: {suma} zł")
+                    st.rerun()
+                else: st.error("Za mało towaru!")
 
 # --- MODUŁ 4: KATEGORIE ---
 elif menu == "📂 Kategorie":
-    st.title("Kategorie")
-    new_k = st.text_input("Nazwa kategorii")
-    if st.button("Dodaj"):
-        conn.cursor().execute("INSERT INTO kategoria (nazwa) VALUES (?)", (new_k,))
-        conn.commit()
-        st.rerun()
+    st.title("Zarządzanie Kategoriami")
+    with st.form("add_k"):
+        nowa_k = st.text_input("Nowa kategoria")
+        if st.form_submit_button("Dodaj"):
+            conn.cursor().execute("INSERT INTO kategoria (nazwa) VALUES (?)", (nowa_k,))
+            conn.commit()
+            st.rerun()
     st.table(pd.read_sql_query("SELECT * FROM kategoria", conn))
+
+# --- MODUŁ 5: USUWANIE (NOWOŚĆ) ---
+elif menu == "⚙️ Usuwanie i Porządki":
+    st.title("Usuwanie danych z bazy")
+    
+    col_u1, col_u2 = st.columns(2)
+    
+    with col_u1:
+        st.subheader("🗑️ Usuń Produkt")
+        df_p_del = pd.read_sql_query("SELECT id, nazwa FROM produkty", conn)
+        if not df_p_del.empty:
+            p_to_del = st.selectbox("Wybierz produkt do usunięcia", df_p_del['nazwa'].tolist())
+            if st.button("USUŃ PRODUKT", type="primary"):
+                pid = df_p_del[df_p_del['nazwa'] == p_to_del]['id'].values[0]
+                conn.cursor().execute("DELETE FROM produkty WHERE id = ?", (int(pid),))
+                conn.commit()
+                st.success(f"Usunięto: {p_to_del}")
+                st.rerun()
+        else: st.info("Brak produktów")
+
+    with col_u2:
+        st.subheader("🗑️ Usuń Kategorię")
+        df_k_del = pd.read_sql_query("SELECT id, nazwa FROM kategoria", conn)
+        if not df_k_del.empty:
+            k_to_del = st.selectbox("Wybierz kategorię", df_k_del['nazwa'].tolist())
+            st.warning("⚠️ Usunięcie kategorii usunie również wszystkie produkty do niej przypisane!")
+            if st.button("USUŃ KATEGORIĘ", type="primary"):
+                kid = df_k_del[df_k_del['nazwa'] == k_to_del]['id'].values[0]
+                conn.cursor().execute("DELETE FROM kategoria WHERE id = ?", (int(kid),))
+                conn.commit()
+                st.success(f"Usunięto kategorię i powiązane produkty")
+                st.rerun()
+        else: st.info("Brak kategorii")
 
 conn.close()
