@@ -4,8 +4,8 @@ import requests
 from datetime import datetime
 
 # --- 1. KONFIGURACJA API ---
-SUPABASE_URL = "https://twoj-projekt.supabase.co"
-SUPABASE_KEY = "twój-anon-key"
+SUPABASE_URL = "https://pfrgvpybklrmjnyttduo.supabase.co"
+SUPABASE_KEY = "sb_publishable_TRb3wyGLDjmxQPXQ2AhtYw_uzmHiwnm"
 HEADERS = {
     "apikey": SUPABASE_KEY,
     "Authorization": f"Bearer {SUPABASE_KEY}",
