@@ -13,21 +13,20 @@ try:
     key: str = st.secrets["SUPABASE_KEY"]
     supabase: Client = create_client(url, key)
 except Exception as e:
-    st.error("Błąd konfiguracji Secrets! Sprawdź ustawienia w Streamlit Cloud.")
+    st.error("Błąd konfiguracji Secrets! Sprawdź URL i Key w Streamlit Cloud.")
     st.stop()
 
 # --- 2. HELPER FUNCTIONS ---
 def zapisz_dziennik(akcja, szczegoly):
-    # Matches your schema: data, akcja, szczegoly, uzytkownik
     try:
         supabase.table("dziennik").insert({
             "data": datetime.now().isoformat(),
             "akcja": akcja, 
             "szczegoly": szczegoly,
-            "uzytkownik": "System App"
+            "uzytkownik": "System"
         }).execute()
     except:
-        pass # Prevents app crash if logging fails
+        pass # Ignore log errors to keep the app running
 
 # --- 3. NAVIGATION ---
 menu = st.sidebar.radio("Nawigacja", ["📊 Dashboard", "📦 Magazyn", "💸 Sprzedaż", "📂 Kategorie", "📜 Historia"])
@@ -38,8 +37,8 @@ menu = st.sidebar.radio("Nawigacja", ["📊 Dashboard", "📦 Magazyn", "💸 Sp
 if menu == "📊 Dashboard":
     st.title("Statystyki i Bilans")
     
-    # Fetch data separately to avoid JOIN errors
-    res_p = supabase.table("Produkty").select("*").execute()
+    # Fetching tables individually to avoid Join/API Errors
+    res_p = supabase.table("produkty").select("*").execute()
     res_k = supabase.table("kategoria").select("*").execute()
     res_s = supabase.table("sprzedaz").select("*").execute()
     
@@ -48,7 +47,7 @@ if menu == "📊 Dashboard":
     df_s = pd.DataFrame(res_s.data)
 
     if not df_p.empty and not df_k.empty:
-        # Manual merge in Python for stability
+        # Python-side merge for maximum stability
         df_merged = df_p.merge(df_k.rename(columns={'id': 'kategoria_id', 'nazwa': 'kat_nazwa'}), 
                                on='kategoria_id', how='left')
         
@@ -60,11 +59,11 @@ if menu == "📊 Dashboard":
         c2.metric("W magazynie (szt.)", int(total_stock))
 
         st.divider()
-        st.subheader("📈 Wizualizacja Zapasów")
+        st.subheader("📈 Struktura Zapasów")
         fig = px.pie(df_merged, values='liczba', names='kat_nazwa', title="Zapas wg kategorii", hole=0.4)
         st.plotly_chart(fig, use_container_width=True)
     else:
-        st.info("Baza danych jest pusta lub brakuje kategorii.")
+        st.info("Brak danych do wyświetlenia statystyk.")
 
 # --- WAREHOUSE (MAGAZYN) ---
 elif menu == "📦 Magazyn":
@@ -86,32 +85,33 @@ elif menu == "📦 Magazyn":
                 cena = c2.number_input("Cena", min_value=0.0)
                 
                 if st.form_submit_button("Zapisz w Bazie"):
-                    supabase.table("Produkty").insert({
+                    supabase.table("produkty").insert({
                         "nazwa": nazwa, "liczba": ilosc, "cena": cena, "kategoria_id": kat_id
                     }).execute()
                     zapisz_dziennik("DODANIE", f"Dodano produkt: {nazwa}")
                     st.success(f"Dodano {nazwa} do chmury!")
                     st.rerun()
 
-    res_p = supabase.table("Produkty").select("*").execute()
+    # View products
+    res_p = supabase.table("produkty").select("*").execute()
     if res_p.data:
         df_p = pd.DataFrame(res_p.data)
         df_merged = df_p.merge(df_kat.rename(columns={'id': 'kategoria_id', 'nazwa': 'kat_nazwa'}), 
                                on='kategoria_id', how='left')
-        st.subheader("Aktualny Stan Magazynowy")
+        st.subheader("Aktualny Stan")
         st.dataframe(df_merged[['nazwa', 'kat_nazwa', 'liczba', 'cena']], use_container_width=True)
 
 # --- SALES (SPRZEDAŻ) ---
 elif menu == "💸 Sprzedaż":
     st.title("Punkt Sprzedaży")
-    res_p = supabase.table("Produkty").select("*").gt("liczba", 0).execute()
+    res_p = supabase.table("produkty").select("*").gt("liczba", 0).execute()
     df_p = pd.DataFrame(res_p.data)
 
     if not df_p.empty:
         with st.form("sale"):
-            p_id = st.selectbox("Wybierz produkt", df_p['id'].tolist(), 
+            p_id = st.selectbox("Produkt", df_p['id'].tolist(), 
                                 format_func=lambda x: df_p[df_p['id']==x]['nazwa'].values[0])
-            ile = st.number_input("Ilość sztuk", min_value=1, step=1)
+            ile = st.number_input("Ilość", min_value=1, step=1)
             
             if st.form_submit_button("Potwierdź Sprzedaż"):
                 row = df_p[df_p['id'] == p_id].iloc[0]
@@ -119,28 +119,27 @@ elif menu == "💸 Sprzedaż":
                     nowa_liczba = int(row['liczba'] - ile)
                     suma = ile * float(row['cena'])
                     
-                    # Update stock in 'Produkty' and insert into 'sprzedaz'
-                    supabase.table("Produkty").update({"liczba": nowa_liczba}).eq("id", p_id).execute()
+                    supabase.table("produkty").update({"liczba": nowa_liczba}).eq("id", p_id).execute()
                     supabase.table("sprzedaz").insert({"produkt_id": p_id, "ilosc": ile, "suma": suma}).execute()
                     
                     zapisz_dziennik("SPRZEDAŻ", f"Sprzedano {ile}x {row['nazwa']}")
-                    st.success(f"Sprzedano! Wartość: {suma:.2f} zł")
+                    st.success(f"Sprzedano! Łącznie: {suma:.2f} zł")
                     st.rerun()
                 else:
-                    st.error("Brak wystarczającej ilości!")
+                    st.error(f"Niewystarczająca ilość! Dostępne: {row['liczba']}")
     else:
-        st.warning("Magazyn jest pusty!")
+        st.warning("Brak produktów z dodatnim stanem.")
 
 # --- CATEGORIES (KATEGORIE) ---
 elif menu == "📂 Kategorie":
-    st.title("Kategorie Produktów")
+    st.title("Kategorie")
     with st.form("add_kat", clear_on_submit=True):
-        nowa_kat = st.text_input("Nazwa nowej kategorii")
+        nowa_kat = st.text_input("Nowa nazwa")
         if st.form_submit_button("Dodaj"):
             if nowa_kat:
                 supabase.table("kategoria").insert({"nazwa": nowa_kat}).execute()
-                zapisz_dziennik("KATEGORIA", f"Utworzono kategorię: {nowa_kat}")
-                st.success("Dodano!")
+                zapisz_dziennik("KATEGORIA", f"Utworzono: {nowa_kat}")
+                st.success("Kategoria dodana!")
                 st.rerun()
 
     res = supabase.table("kategoria").select("*").execute()
@@ -149,7 +148,7 @@ elif menu == "📂 Kategorie":
 
 # --- HISTORY ---
 elif menu == "📜 Historia":
-    st.title("Dziennik Operacji")
+    st.title("Historia")
     res_h = supabase.table("dziennik").select("*").order("id", desc=True).execute()
     if res_h.data:
         st.dataframe(pd.DataFrame(res_h.data), use_container_width=True)
