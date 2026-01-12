@@ -1,300 +1,145 @@
 import streamlit as st
-
-import sqlite3
-
 import pandas as pd
-
 import plotly.express as px
-
 from datetime import datetime
+from supabase import create_client, Client
 
-import io
-
-
-# --- 1. KONFIGURACJA ---
-
+# --- 1. KONFIGURACJA & POŁĄCZENIE ---
 st.set_page_config(page_title="Sklep Magazynier Pro", layout="wide", page_icon="🧾")
 
+# Initialize Supabase client
+url: str = st.secrets["SUPABASE_URL"]
+key: str = st.secrets["SUPABASE_KEY"]
+supabase: Client = create_client(url, key)
 
-
-# --- 2. BAZA DANYCH ---
-
-def get_connection():
-
-    conn = sqlite3.connect('sklep_final.db', check_same_thread=False)
-
-    conn.execute("PRAGMA foreign_keys = ON")
-
-    return conn
-
-
-
-def init_db():
-
-    conn = get_connection()
-
-    cur = conn.cursor()
-
-    cur.execute('CREATE TABLE IF NOT EXISTS kategoria (id INTEGER PRIMARY KEY AUTOINCREMENT, nazwa TEXT UNIQUE)')
-
-    cur.execute('''CREATE TABLE IF NOT EXISTS produkty (
-
-                    id INTEGER PRIMARY KEY AUTOINCREMENT, nazwa TEXT, liczba INTEGER, 
-
-                    cena REAL, kategoria_id INTEGER, 
-
-                    FOREIGN KEY(kategoria_id) REFERENCES kategoria(id) ON DELETE CASCADE)''')
-
-    cur.execute('''CREATE TABLE IF NOT EXISTS sprzedaz (
-
-                    id INTEGER PRIMARY KEY AUTOINCREMENT, data TEXT, produkt_id INTEGER, 
-
-                    ilosc INTEGER, suma REAL)''')
-
-    cur.execute('''CREATE TABLE IF NOT EXISTS dziennik (
-
-                    id INTEGER PRIMARY KEY AUTOINCREMENT, data TEXT, akcja TEXT, szczegoly TEXT)''')
-
-    conn.commit()
-
-    return conn
-
-
+# --- 2. FUNKCJE POMOCNICZE (Supabase) ---
 
 def zapisz_w_dzienniku(akcja, szczegoly):
-
-    conn = get_connection()
-
-    cur = conn.cursor()
-
-    cur.execute("INSERT INTO dziennik (data, akcja, szczegoly) VALUES (?, ?, ?)",
-
-                (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), akcja, szczegoly))
-
-    conn.commit()
-
-
+    data = {
+        "data": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "akcja": akcja,
+        "szczegoly": szczegoly
+    }
+    supabase.table("dziennik").insert(data).execute()
 
 def generuj_paragon(nazwa_p, ile, cena_jedn, suma):
-
     data_sprz = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
     return f"""
-
 ====================================
-
-       POTWIERDZENIE SPRZEDAŻY
-
+        POTWIERDZENIE SPRZEDAŻY
 ====================================
-
 Data: {data_sprz}
-
 ------------------------------------
-
 Produkt:    {nazwa_p}
-
 Ilość:      {ile} szt.
-
 Cena jedn.: {cena_jedn:.2f} zł
-
 ------------------------------------
-
-SUMA:       {suma:.2f} zł
-
+SUMA:        {suma:.2f} zł
 ====================================
-
 Dziękujemy za zakupy!
-
 """
 
-
-
-conn = init_db()
-
-
-
 # --- 3. NAWIGACJA ---
-
 st.sidebar.title("🏢 Menu Główne")
+menu = st.sidebar.radio("Wybierz moduł:", ["📊 Dashboard", "📦 Magazyn", "💸 Sprzedaż", "📂 Kategorie", "📜 Historia Operacji"])
 
-menu = st.sidebar.radio("Wybierz moduł:", ["📊 Dashboard", "📦 Magazyn", "💸 Sprzedaż", "📂 Kategorie", "⚙️ Zarządzanie", "📜 Historia Operacji"])
-
-
-
-# --- 4. MODUŁY APLIKACJI ---
-
-
+# --- 4. MODUŁY ---
 
 # --- DASHBOARD ---
-
 if menu == "📊 Dashboard":
-
     st.title("Statystyki i Bilans")
-
-    query_p = '''SELECT p.id, p.nazwa, p.liczba, p.cena, k.nazwa as kategoria 
-
-                 FROM produkty p JOIN kategoria k ON p.kategoria_id = k.id'''
-
-    df_p = pd.read_sql_query(query_p, conn)
-
-    df_s = pd.read_sql_query("SELECT s.data, p.nazwa, s.ilosc, s.suma FROM sprzedaz s JOIN produkty p ON s.produkt_id = p.id", conn)
-
-
+    
+    # Pobieranie danych z Supabase
+    res_p = supabase.table("produkty").select("*, kategoria(nazwa)").execute()
+    res_s = supabase.table("sprzedaz").select("*, produkty(nazwa)").execute()
+    
+    df_p = pd.DataFrame(res_p.data)
+    df_s = pd.DataFrame(res_s.data)
 
     if not df_p.empty:
-
-        sprzedane_suma = df_s.groupby('nazwa')['ilosc'].sum().reset_index()
-
-        sprzedane_suma.columns = ['nazwa', 'Sprzedano']
-
-        bilans = pd.merge(df_p, sprzedane_suma, on='nazwa', how='left').fillna(0)
-
-        bilans['Sprzedano'] = bilans['Sprzedano'].astype(int)
-
-        bilans['Łącznie było'] = bilans['liczba'] + bilans['Sprzedano']
-
-
-
+        # Re-format category name from join
+        df_p['kategoria_nazwa'] = df_p['kategoria'].apply(lambda x: x['nazwa'] if x else "Brak")
+        
         total_income = df_s['suma'].sum() if not df_s.empty else 0
-
-        c1, c2, c3 = st.columns(3)
-
+        total_stock = df_p['liczba'].sum()
+        
+        c1, c2 = st.columns(2)
         c1.metric("Całkowity Przychód", f"{total_income:,.2f} zł")
+        c2.metric("W magazynie (szt.)", int(total_stock))
 
-        c2.metric("W magazynie (szt.)", int(bilans['liczba'].sum()))
-
-        c3.metric("Sprzedano (szt.)", int(bilans['Sprzedano'].sum()))
-
-
-
-        st.divider()
-
-        st.subheader("📝 Szczegółowa legenda sprzedaży")
-
-        col_leg1, col_leg2 = st.columns(2)
-
-        bilans_sorted = bilans.sort_values(by='Sprzedano', ascending=False).reset_index(drop=True)
-
-        for i, row in bilans_sorted.iterrows():
-
-            target_col = col_leg1 if i % 2 == 0 else col_leg2
-
-            target_col.write(f"🔹 **{row['nazwa']}**: sprzedano **{row['Sprzedano']}** szt. (zostało: {row['liczba']})")
-
-
-
-        st.divider()
-
-        st.subheader("📈 Wizualizacja Danych")
-
-        col_g1, col_g2 = st.columns(2)
-
-        with col_g1:
-
-            st.plotly_chart(px.pie(bilans, values='liczba', names='kategoria', title="Zapas wg kategorii", hole=0.4), use_container_width=True)
-
-        with col_g2:
-
-            st.plotly_chart(px.bar(bilans, x='nazwa', y=['Sprzedano', 'liczba'], title="Sprzedaż vs Stan", barmode='group'), use_container_width=True)
-
+        st.plotly_chart(px.pie(df_p, values='liczba', names='kategoria_nazwa', title="Zapas wg kategorii"), use_container_width=True)
     else:
-
         st.info("Baza jest pusta.")
 
-
-
 # --- MAGAZYN ---
-
 elif menu == "📦 Magazyn":
-
     st.title("Zarządzanie Towarem")
-
-    df_kat = pd.read_sql_query("SELECT * FROM kategoria", conn)
+    res_kat = supabase.table("kategoria").select("*").execute()
+    df_kat = pd.DataFrame(res_kat.data)
 
     with st.expander("➕ Dodaj nowy produkt"):
-
         if not df_kat.empty:
-
             with st.form("add_p", clear_on_submit=True):
-
                 n = st.text_input("Nazwa produktu")
-
-                k = st.selectbox("Kategoria", df_kat['nazwa'].tolist())
-
-                c1, c2 = st.columns(2)
-
-                l = c1.number_input("Ilość", min_value=1)
-
-                p = c2.number_input("Cena", min_value=0.0)
-
+                k_id = st.selectbox("Kategoria", df_kat['id'].tolist(), format_func=lambda x: df_kat[df_kat['id']==x]['nazwa'].values[0])
+                l = st.number_input("Ilość", min_value=1)
+                p = st.number_input("Cena", min_value=0.0)
+                
                 if st.form_submit_button("Zapisz"):
-
-                    kid = df_kat[df_kat['nazwa'] == k]['id'].values[0]
-
-                    conn.cursor().execute("INSERT INTO produkty (nazwa, liczba, cena, kategoria_id) VALUES (?,?,?,?)", (n,l,p,int(kid)))
-
-                    conn.commit()
-
+                    supabase.table("produkty").insert({"nazwa": n, "liczba": l, "cena": p, "kategoria_id": k_id}).execute()
                     zapisz_w_dzienniku("DODANIE", f"Dodano produkt: {n}")
-
+                    st.success("Produkt dodany!")
                     st.rerun()
 
-    df_v = pd.read_sql_query("SELECT p.id, p.nazwa, p.liczba, p.cena, k.nazwa as kategoria FROM produkty p JOIN kategoria k ON p.kategoria_id = k.id", conn)
+    res_v = supabase.table("produkty").select("id, nazwa, liczba, cena, kategoria(nazwa)").execute()
+    st.dataframe(res_v.data, use_container_width=True)
 
-    st.dataframe(df_v, use_container_width=True, hide_index=True)
-
-
-
-# --- SPRZEDAŻ (NAPRAWIONA) ---
-
+# --- SPRZEDAŻ ---
 elif menu == "💸 Sprzedaż":
-
     st.title("Punkt Sprzedaży")
-
-    df_stock = pd.read_sql_query("SELECT id, nazwa, liczba, cena FROM produkty WHERE liczba > 0", conn)
-
-    
+    res_stock = supabase.table("produkty").select("*").gt("liczba", 0).execute()
+    df_stock = pd.DataFrame(res_stock.data)
 
     if not df_stock.empty:
-
         with st.form("sale_form"):
-
-            prod = st.selectbox("Wybierz produkt", df_stock['nazwa'].tolist())
-
+            prod_id = st.selectbox("Produkt", df_stock['id'].tolist(), format_func=lambda x: df_stock[df_stock['id']==x]['nazwa'].values[0])
             ile = st.number_input("Ilość", min_value=1, step=1)
-
             confirm = st.form_submit_button("Potwierdź Sprzedaż")
 
-            
-
             if confirm:
-
-                row = df_stock[df_stock['nazwa'] == prod].iloc[0]
-
+                row = df_stock[df_stock['id'] == prod_id].iloc[0]
                 if ile <= row['liczba']:
-
                     suma = ile * row['cena']
-
-                    cur = conn.cursor()
-
-                    cur.execute("UPDATE produkty SET liczba = liczba - ? WHERE id = ?", (ile, int(row['id'])))
-
-                    cur.execute("INSERT INTO sprzedaz (data, produkt_id, ilosc, suma) VALUES (?,?,?,?)", 
-
-                                (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), int(row['id']), ile, suma))
-
-                    conn.commit()
-
-                    zapisz_w_dzienniku("SPRZEDAŻ", f"Sprzedano {ile}x {prod}")
-
+                    # Update Stock
+                    supabase.table("produkty").update({"liczba": int(row['liczba'] - ile)}).eq("id", prod_id).execute()
+                    # Insert Sale
+                    supabase.table("sprzedaz").insert({"produkt_id": prod_id, "ilosc": ile, "suma": suma, "data": datetime.now().isoformat()}).execute()
                     
-
-                    # Zapis do stanu sesji
-
-                    st.session_state.paragon_data = generuj_paragon(prod, ile, row['cena'], suma)
-
+                    zapisz_w_dzienniku("SPRZEDAŻ", f"Sprzedano {ile}x {row['nazwa']}")
+                    st.session_state.paragon_data = generuj_paragon(row['nazwa'], ile, row['cena'], suma)
                     st.session_state.sukces = True
-
-                    st.success(f"Sprzedano! Wartość: {suma:.2f} zł")
-
                 else:
+                    st.error("Brak wystarczającej ilości!")
+
+        if st.session_state.get('sukces'):
+            st.code(st.session_state.paragon_data)
+            if st.button("Nowa transakcja"):
+                st.session_state.sukces = False
+                st.rerun()
+
+# --- KATEGORIE ---
+elif menu == "📂 Kategorie":
+    st.title("Kategorie")
+    nowa = st.text_input("Nowa kategoria")
+    if st.button("Dodaj"):
+        supabase.table("kategoria").insert({"nazwa": nowa}).execute()
+        st.rerun()
+    
+    res = supabase.table("kategoria").select("*").execute()
+    st.table(res.data)
+
+# --- HISTORIA ---
+elif menu == "📜 Historia Operacji":
+    st.title("Logi")
+    res_h = supabase.table("dziennik").select("*").order("id", desc=True).execute()
+    st.dataframe(res_h.data, use_container_width=True)
