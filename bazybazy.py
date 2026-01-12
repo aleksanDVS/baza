@@ -7,7 +7,7 @@ from supabase import create_client, Client
 # --- 1. CONFIGURATION ---
 st.set_page_config(page_title="Magazynier Pro Cloud", layout="wide", page_icon="🧾")
 
-# Connect to Supabase using Secrets
+# Establish connection using your provided URL and Key in Secrets
 try:
     url: str = st.secrets["SUPABASE_URL"]
     key: str = st.secrets["SUPABASE_KEY"]
@@ -18,10 +18,12 @@ except Exception as e:
 
 # --- 2. HELPER FUNCTIONS ---
 def zapisz_dziennik(akcja, szczegoly):
+    # Matches your schema: data, akcja, szczegoly, uzytkownik
     supabase.table("dziennik").insert({
         "data": datetime.now().isoformat(),
         "akcja": akcja, 
-        "szczegoly": szczegoly
+        "szczegoly": szczegoly,
+        "uzytkownik": "System App"  # Default value for the uzytkownik column
     }).execute()
 
 # --- 3. NAVIGATION ---
@@ -33,15 +35,14 @@ menu = st.sidebar.radio("Nawigacja", ["📊 Dashboard", "📦 Magazyn", "💸 Sp
 if menu == "📊 Dashboard":
     st.title("Statystyki i Bilans")
     
-    # Fetch data
-    res_p = supabase.table("produkty").select("*, kategoria(nazwa)").execute()
-    res_s = supabase.table("sprzedaz").select("*, produkty(nazwa)").execute()
+    # Note: Using 'Produkty' with capital P as per your image
+    res_p = supabase.table("Produkty").select("*, kategoria(nazwa)").execute()
+    res_s = supabase.table("sprzedaz").select("*, Produkty(nazwa)").execute()
     
     df_p = pd.DataFrame(res_p.data)
     df_s = pd.DataFrame(res_s.data)
 
     if not df_p.empty:
-        # Metrics
         total_income = df_s['suma'].sum() if not df_s.empty else 0
         total_stock = df_p['liczba'].sum()
         
@@ -49,7 +50,6 @@ if menu == "📊 Dashboard":
         c1.metric("Całkowity Przychód", f"{total_income:,.2f} zł")
         c2.metric("W magazynie (szt.)", int(total_stock))
 
-        # Re-format category names for the chart
         df_p['kategoria_nazwa'] = df_p['kategoria'].apply(lambda x: x['nazwa'] if x else "Brak")
         
         st.divider()
@@ -57,7 +57,7 @@ if menu == "📊 Dashboard":
         fig = px.pie(df_p, values='liczba', names='kategoria_nazwa', title="Zapas wg kategorii", hole=0.4)
         st.plotly_chart(fig, use_container_width=True)
     else:
-        st.info("Baza danych jest pusta. Dodaj kategorie i produkty.")
+        st.info("Baza danych jest pusta.")
 
 # --- WAREHOUSE (MAGAZYN) ---
 elif menu == "📦 Magazyn":
@@ -67,7 +67,7 @@ elif menu == "📦 Magazyn":
     df_kat = pd.DataFrame(res_kat.data)
 
     if df_kat.empty:
-        st.warning("Najpierw dodaj kategorię w zakładce 'Kategorie'!")
+        st.warning("Najpierw dodaj kategorię!")
     else:
         with st.expander("➕ Dodaj nowy produkt"):
             with st.form("add_product", clear_on_submit=True):
@@ -79,18 +79,17 @@ elif menu == "📦 Magazyn":
                 cena = c2.number_input("Cena", min_value=0.0)
                 
                 if st.form_submit_button("Zapisz w Bazie"):
-                    supabase.table("produkty").insert({
+                    # Using table 'Produkty' as per your schema
+                    supabase.table("Produkty").insert({
                         "nazwa": nazwa, "liczba": ilosc, "cena": cena, "kategoria_id": kat_id
                     }).execute()
                     zapisz_dziennik("DODANIE", f"Dodano produkt: {nazwa}")
                     st.success(f"Dodano {nazwa} do chmury!")
                     st.rerun()
 
-    # Display Stock
-    res = supabase.table("produkty").select("id, nazwa, liczba, cena, kategoria(nazwa)").execute()
+    res = supabase.table("Produkty").select("id, nazwa, liczba, cena, kategoria(nazwa)").execute()
     if res.data:
         df_view = pd.DataFrame(res.data)
-        # Flatten the category name
         df_view['kategoria'] = df_view['kategoria'].apply(lambda x: x['nazwa'] if x else "Brak")
         st.subheader("Aktualny Stan Magazynowy")
         st.dataframe(df_view[['nazwa', 'kategoria', 'liczba', 'cena']], use_container_width=True)
@@ -98,7 +97,7 @@ elif menu == "📦 Magazyn":
 # --- SALES (SPRZEDAŻ) ---
 elif menu == "💸 Sprzedaż":
     st.title("Punkt Sprzedaży")
-    res_p = supabase.table("produkty").select("*").gt("liczba", 0).execute()
+    res_p = supabase.table("Produkty").select("*").gt("liczba", 0).execute()
     df_p = pd.DataFrame(res_p.data)
 
     if not df_p.empty:
@@ -111,17 +110,17 @@ elif menu == "💸 Sprzedaż":
                 row = df_p[df_p['id'] == p_id].iloc[0]
                 if ile <= row['liczba']:
                     nowa_liczba = int(row['liczba'] - ile)
-                    suma = ile * row['cena']
+                    suma = ile * float(row['cena'])
                     
-                    # Update Stock and Record Sale
-                    supabase.table("produkty").update({"liczba": nowa_liczba}).eq("id", p_id).execute()
+                    # Updates according to schema: 'Produkty' and 'sprzedaz'
+                    supabase.table("Produkty").update({"liczba": nowa_liczba}).eq("id", p_id).execute()
                     supabase.table("sprzedaz").insert({"produkt_id": p_id, "ilosc": ile, "suma": suma}).execute()
                     
                     zapisz_dziennik("SPRZEDAŻ", f"Sprzedano {ile}x {row['nazwa']}")
                     st.success(f"Sprzedano! Wartość: {suma:.2f} zł")
                     st.rerun()
                 else:
-                    st.error(f"Brak wystarczającej ilości! Dostępne: {row['liczba']}")
+                    st.error(f"Brak wystarczającej ilości!")
     else:
         st.warning("Magazyn jest pusty!")
 
