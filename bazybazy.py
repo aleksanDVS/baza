@@ -7,7 +7,7 @@ from supabase import create_client, Client
 # --- 1. CONFIGURATION ---
 st.set_page_config(page_title="Magazynier Pro Cloud", layout="wide", page_icon="🧾")
 
-# Establish connection using your provided URL and Key in Secrets
+# Establish connection using Secrets
 try:
     url: str = st.secrets["SUPABASE_URL"]
     key: str = st.secrets["SUPABASE_KEY"]
@@ -19,12 +19,15 @@ except Exception as e:
 # --- 2. HELPER FUNCTIONS ---
 def zapisz_dziennik(akcja, szczegoly):
     # Matches your schema: data, akcja, szczegoly, uzytkownik
-    supabase.table("dziennik").insert({
-        "data": datetime.now().isoformat(),
-        "akcja": akcja, 
-        "szczegoly": szczegoly,
-        "uzytkownik": "System App"  # Default value for the uzytkownik column
-    }).execute()
+    try:
+        supabase.table("dziennik").insert({
+            "data": datetime.now().isoformat(),
+            "akcja": akcja, 
+            "szczegoly": szczegoly,
+            "uzytkownik": "System App"
+        }).execute()
+    except:
+        pass # Prevents app crash if logging fails
 
 # --- 3. NAVIGATION ---
 menu = st.sidebar.radio("Nawigacja", ["📊 Dashboard", "📦 Magazyn", "💸 Sprzedaż", "📂 Kategorie", "📜 Historia"])
@@ -35,14 +38,20 @@ menu = st.sidebar.radio("Nawigacja", ["📊 Dashboard", "📦 Magazyn", "💸 Sp
 if menu == "📊 Dashboard":
     st.title("Statystyki i Bilans")
     
-    # Note: Using 'Produkty' with capital P as per your image
-    res_p = supabase.table("Produkty").select("*, kategoria(nazwa)").execute()
-    res_s = supabase.table("sprzedaz").select("*, Produkty(nazwa)").execute()
+    # Fetch data separately to avoid JOIN errors
+    res_p = supabase.table("Produkty").select("*").execute()
+    res_k = supabase.table("kategoria").select("*").execute()
+    res_s = supabase.table("sprzedaz").select("*").execute()
     
     df_p = pd.DataFrame(res_p.data)
+    df_k = pd.DataFrame(res_k.data)
     df_s = pd.DataFrame(res_s.data)
 
-    if not df_p.empty:
+    if not df_p.empty and not df_k.empty:
+        # Manual merge in Python for stability
+        df_merged = df_p.merge(df_k.rename(columns={'id': 'kategoria_id', 'nazwa': 'kat_nazwa'}), 
+                               on='kategoria_id', how='left')
+        
         total_income = df_s['suma'].sum() if not df_s.empty else 0
         total_stock = df_p['liczba'].sum()
         
@@ -50,14 +59,12 @@ if menu == "📊 Dashboard":
         c1.metric("Całkowity Przychód", f"{total_income:,.2f} zł")
         c2.metric("W magazynie (szt.)", int(total_stock))
 
-        df_p['kategoria_nazwa'] = df_p['kategoria'].apply(lambda x: x['nazwa'] if x else "Brak")
-        
         st.divider()
         st.subheader("📈 Wizualizacja Zapasów")
-        fig = px.pie(df_p, values='liczba', names='kategoria_nazwa', title="Zapas wg kategorii", hole=0.4)
+        fig = px.pie(df_merged, values='liczba', names='kat_nazwa', title="Zapas wg kategorii", hole=0.4)
         st.plotly_chart(fig, use_container_width=True)
     else:
-        st.info("Baza danych jest pusta.")
+        st.info("Baza danych jest pusta lub brakuje kategorii.")
 
 # --- WAREHOUSE (MAGAZYN) ---
 elif menu == "📦 Magazyn":
@@ -67,7 +74,7 @@ elif menu == "📦 Magazyn":
     df_kat = pd.DataFrame(res_kat.data)
 
     if df_kat.empty:
-        st.warning("Najpierw dodaj kategorię!")
+        st.warning("Najpierw dodaj kategorię w zakładce 'Kategorie'!")
     else:
         with st.expander("➕ Dodaj nowy produkt"):
             with st.form("add_product", clear_on_submit=True):
@@ -79,7 +86,6 @@ elif menu == "📦 Magazyn":
                 cena = c2.number_input("Cena", min_value=0.0)
                 
                 if st.form_submit_button("Zapisz w Bazie"):
-                    # Using table 'Produkty' as per your schema
                     supabase.table("Produkty").insert({
                         "nazwa": nazwa, "liczba": ilosc, "cena": cena, "kategoria_id": kat_id
                     }).execute()
@@ -87,12 +93,13 @@ elif menu == "📦 Magazyn":
                     st.success(f"Dodano {nazwa} do chmury!")
                     st.rerun()
 
-    res = supabase.table("Produkty").select("id, nazwa, liczba, cena, kategoria(nazwa)").execute()
-    if res.data:
-        df_view = pd.DataFrame(res.data)
-        df_view['kategoria'] = df_view['kategoria'].apply(lambda x: x['nazwa'] if x else "Brak")
+    res_p = supabase.table("Produkty").select("*").execute()
+    if res_p.data:
+        df_p = pd.DataFrame(res_p.data)
+        df_merged = df_p.merge(df_kat.rename(columns={'id': 'kategoria_id', 'nazwa': 'kat_nazwa'}), 
+                               on='kategoria_id', how='left')
         st.subheader("Aktualny Stan Magazynowy")
-        st.dataframe(df_view[['nazwa', 'kategoria', 'liczba', 'cena']], use_container_width=True)
+        st.dataframe(df_merged[['nazwa', 'kat_nazwa', 'liczba', 'cena']], use_container_width=True)
 
 # --- SALES (SPRZEDAŻ) ---
 elif menu == "💸 Sprzedaż":
@@ -112,7 +119,7 @@ elif menu == "💸 Sprzedaż":
                     nowa_liczba = int(row['liczba'] - ile)
                     suma = ile * float(row['cena'])
                     
-                    # Updates according to schema: 'Produkty' and 'sprzedaz'
+                    # Update stock in 'Produkty' and insert into 'sprzedaz'
                     supabase.table("Produkty").update({"liczba": nowa_liczba}).eq("id", p_id).execute()
                     supabase.table("sprzedaz").insert({"produkt_id": p_id, "ilosc": ile, "suma": suma}).execute()
                     
@@ -120,7 +127,7 @@ elif menu == "💸 Sprzedaż":
                     st.success(f"Sprzedano! Wartość: {suma:.2f} zł")
                     st.rerun()
                 else:
-                    st.error(f"Brak wystarczającej ilości!")
+                    st.error("Brak wystarczającej ilości!")
     else:
         st.warning("Magazyn jest pusty!")
 
