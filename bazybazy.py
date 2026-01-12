@@ -3,129 +3,58 @@ import pandas as pd
 import requests
 from datetime import datetime
 
-# --- 1. KONFIGURACJA SUPABASE ---
-# Upewnij się, że URL kończy się na /rest/v1
-SB_URL = "https://pfrgvpybklrmjnyttduo.supabase.co"
-SB_KEY = "sb_publishable_TRb3wyGLDjmxQPXQ2AhtYw_uzmHiwnm"
+# --- 1. KONFIGURACJA API ---
+SUPABASE_URL = "https://twoj-projekt.supabase.co"
+SUPABASE_KEY = "twój-anon-key"
 HEADERS = {
-    "apikey": SB_KEY,
-    "Authorization": f"Bearer {SB_KEY}",
+    "apikey": SUPABASE_KEY,
+    "Authorization": f"Bearer {SUPABASE_KEY}",
     "Content-Type": "application/json",
-    "Prefer": "return=representation"
+    "Prefer": "return=representation" # Informuje API, by zwracało wstawione dane
 }
 
-# --- 2. FUNKCJE API ---
-def db_get(table, params=""):
-    try:
-        r = requests.get(f"{SB_URL}/{table}?{params}", headers=HEADERS)
-        return r.json()
-    except:
-        return []
+# --- 2. FUNKCJE KOMUNIKACJI ---
 
-def db_post(table, data):
-    requests.post(f"{SB_URL}/{table}", headers=HEADERS, json=data)
+def supabase_get(table, select="*"):
+    url = f"{SUPABASE_URL}/rest/v1/{table}?select={select}"
+    response = requests.get(url, headers=HEADERS)
+    return response.json()
 
-def db_patch(table, data, id_val):
-    requests.patch(f"{SB_URL}/{table}?id=eq.{id_val}", headers=HEADERS, json=data)
+def supabase_insert(table, data):
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
+    requests.post(url, headers=HEADERS, json=data)
 
-def log(akcja, szczegoly):
-    db_post("dziennik", {
-        "data": datetime.now().isoformat(), 
-        "akcja": akcja, 
-        "szczegoly": szczegoly, 
-        "uzytkownik": "Admin"
-    })
+def supabase_update(table, data, column_name, value):
+    url = f"{SUPABASE_URL}/rest/v1/{table}?{column_name}=eq.{value}"
+    requests.patch(url, headers=HEADERS, json=data)
 
-# --- 3. UI ---
-st.set_page_config(page_title="Magazyn Supabase", layout="wide")
-menu = st.sidebar.radio("Menu", ["📊 Dashboard", "📦 Magazyn", "💸 Sprzedaż", "📂 Kategorie", "📜 Historia"])
+# --- 3. PRZYKŁAD ZASTOSOWANIA W TWOIM KODZIE ---
 
-# --- DASHBOARD ---
-if menu == "📊 Dashboard":
-    st.title("Statystyki")
-    p_data = db_get("produkty", "select=*,kategoria(nazwa)")
+# DASHBOARD (Pobieranie danych)
+if st.sidebar.radio("Menu", ["Dashboard", "..."]) == "Dashboard":
+    # Pobieranie produktów z joinem do kategorii (składnia PostgREST)
+    data = supabase_get("produkty", "*,kategoria(nazwa)")
+    df_p = pd.DataFrame(data)
     
-    if isinstance(p_data, list) and len(p_data) > 0:
-        df = pd.DataFrame(p_data)
-        # Zabezpieczenie wyciągania nazwy kategorii z relacji
-        df['kat_nazwa'] = df['kategoria'].apply(lambda x: x['nazwa'] if isinstance(x, dict) else "Brak")
-        
-        c1, c2 = st.columns(2)
-        c1.metric("Produkty w bazie", len(df))
-        c2.metric("Suma sztuk", int(df['liczba'].sum()))
-        st.bar_chart(df.set_index('nazwa')['liczba'])
-    else:
-        st.info("Baza jest pusta. Dodaj produkty w zakładce Magazyn.")
+    if not df_p.empty:
+        # Przetworzenie zagnieżdżonego słownika z kategorią
+        df_p['kategoria_nazwa'] = df_p['kategoria'].apply(lambda x: x['nazwa'] if x else "Brak")
+        st.dataframe(df_p)
 
-# --- MAGAZYN ---
-elif menu == "📦 Magazyn":
-    st.title("Magazyn")
-    kat_data = db_get("kategoria")
-    df_k = pd.DataFrame(kat_data) if (isinstance(kat_data, list) and len(kat_data) > 0) else pd.DataFrame()
+# DODAWANIE PRODUKTU (Wstawianie danych)
+# (wewnątrz formularza)
+if st.button("Zapisz produkt"):
+    nowy_produkt = {
+        "nazwa": "Mleko",
+        "liczba": 10,
+        "cena": 3.50,
+        "kategoria_id": 1
+    }
+    supabase_insert("produkty", nowy_produkt)
+    st.success("Dodano!")
 
-    with st.expander("Dodaj produkt"):
-        n = st.text_input("Nazwa")
-        k_name = st.selectbox("Kategoria", df_k['nazwa'].tolist() if not df_k.empty else [])
-        l = st.number_input("Ilość", min_value=0)
-        c = st.number_input("Cena", min_value=0.0)
-        if st.button("Zapisz"):
-            if not df_k.empty and n:
-                k_id = df_k[df_k['nazwa'] == k_name]['id'].values[0]
-                db_post("produkty", {"nazwa": n, "liczba": l, "cena": c, "kategoria_id": int(k_id)})
-                log("DODANIE", f"Produkt: {n}")
-                st.rerun()
-
-    prods = db_get("produkty", "select=*,kategoria(nazwa)")
-    if isinstance(prods, list) and len(prods) > 0:
-        df_p = pd.DataFrame(prods)
-        # Czyszczenie wyglądu tabeli dla użytkownika
-        df_p['kategoria'] = df_p['kategoria'].apply(lambda x: x['nazwa'] if isinstance(x, dict) else "Brak")
-        st.table(df_p[['id', 'nazwa', 'liczba', 'cena', 'kategoria']])
-
-# --- SPRZEDAŻ ---
-elif menu == "💸 Sprzedaż":
-    st.title("Sprzedaż")
-    prods = db_get("produkty", "liczba=gt.0")
-    if isinstance(prods, list) and len(prods) > 0:
-        df_s = pd.DataFrame(prods)
-        wybrany = st.selectbox("Produkt", df_s['nazwa'].tolist())
-        ile = st.number_input("Ile sztuk", min_value=1)
-        if st.button("Sprzedaj"):
-            row = df_s[df_s['nazwa'] == wybrany].iloc[0]
-            if ile <= row['liczba']:
-                nowa_ilosc = int(row['liczba'] - ile)
-                suma = ile * float(row['cena'])
-                db_patch("produkty", {"liczba": nowa_ilosc}, row['id'])
-                db_post("sprzedaz", {
-                    "produkt_id": int(row['id']), 
-                    "ilosc": ile, 
-                    "suma": suma, 
-                    "data": datetime.now().isoformat()
-                })
-                log("SPRZEDAŻ", f"{ile}x {wybrany}")
-                st.success(f"Sprzedano! Suma: {suma:.2f}")
-                st.rerun()
-            else: st.error("Za mało towaru!")
-    else:
-        st.warning("Brak produktów z ilością większą niż 0.")
-
-# --- KATEGORIE ---
-elif menu == "📂 Kategorie":
-    st.title("Kategorie")
-    nowa_kat = st.text_input("Nazwa kategorii")
-    if st.button("Dodaj"):
-        if nowa_kat:
-            db_post("kategoria", {"nazwa": nowa_kat})
-            log("KAT_DODAJ", nowa_kat)
-            st.rerun()
-    
-    kats = db_get("kategoria")
-    if isinstance(kats, list) and len(kats) > 0:
-        st.table(pd.DataFrame(kats))
-
-# --- HISTORIA ---
-elif menu == "📜 Historia":
-    st.title("Dziennik")
-    logs = db_get("dziennik", "order=id.desc")
-    if isinstance(logs, list) and len(logs) > 0:
-        st.dataframe(pd.DataFrame(logs), use_container_width=True)
+# SPRZEDAŻ (Aktualizacja danych)
+# (podczas potwierdzenia sprzedaży)
+if st.button("Sprzedaj"):
+    # Zmniejszenie stanu magazynowego
+    supabase_update("produkty", {"liczba": 5}, "id", 123)
