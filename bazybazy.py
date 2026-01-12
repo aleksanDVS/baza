@@ -11,7 +11,6 @@ from datetime import datetime
 import io
 
 
-
 # --- 1. KONFIGURACJA ---
 
 st.set_page_config(page_title="Sklep Magazynier Pro", layout="wide", page_icon="🧾")
