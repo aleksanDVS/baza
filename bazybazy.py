@@ -4,8 +4,8 @@ import requests
 from datetime import datetime
 
 # --- 1. KONFIGURACJA SUPABASE (Wpisz swoje dane) ---
-SB_URL = https://pfrgvpybklrmjnyttduo.supabase.co
-SB_KEY = sb_publishable_TRb3wyGLDjmxQPXQ2AhtYw_uzmHiwnm
+SB_URL = "https://pfrgvpybklrmjnyttduo.supabase.co"
+SB_KEY = "sb_publishable_TRb3wyGLDjmxQPXQ2AhtYw_uzmHiwnm"
 HEADERS = {
     "apikey": SB_KEY,
     "Authorization": f"Bearer {SB_KEY}",
