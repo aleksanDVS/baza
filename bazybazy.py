@@ -90,13 +90,14 @@ elif menu == "📦 Magazyn":
             st.dataframe(df_p, use_container_width=True)
             
             st.divider()
-            st.subheader("Usuwanie")
+            st.subheader("Usuwanie Produktu")
             with st.form("del_form"):
                 to_del = st.selectbox("Wybierz produkt do usunięcia", df_p['id'].tolist(), 
                                       format_func=lambda x: df_p[df_p['id']==x]['nazwa'].values[0])
-                if st.form_submit_button("Usuń trwale"):
+                if st.form_submit_button("Usuń trwale produkt"):
                     supabase.table("produkty").delete().eq("id", to_del).execute()
                     zapisz_dziennik("USUNIĘCIE", f"ID produktu: {to_del}")
+                    st.success("Produkt usunięty!")
                     st.rerun()
     except Exception as e:
         st.error(f"Błąd: {e}")
@@ -127,17 +128,40 @@ elif menu == "💸 Sprzedaż":
         st.error(f"Błąd: {e}")
 
 elif menu == "📂 Kategorie":
-    st.title("Kategorie")
+    st.title("Zarządzanie Kategoriami")
     try:
+        # Dodawanie kategorii
         with st.form("kat_form"):
             nazwa_k = st.text_input("Nowa kategoria")
             if st.form_submit_button("Dodaj"):
-                supabase.table("kategoria").insert({"nazwa": nazwa_k}).execute()
-                zapisz_dziennik("KATEGORIA", f"Dodano: {nazwa_k}")
-                st.rerun()
+                if nazwa_k:
+                    supabase.table("kategoria").insert({"nazwa": nazwa_k}).execute()
+                    zapisz_dziennik("KATEGORIA", f"Dodano: {nazwa_k}")
+                    st.success(f"Dodano kategorię: {nazwa_k}")
+                    st.rerun()
+        
+        st.divider()
+        
+        # Wyświetlanie i usuwanie kategorii
         res_k = supabase.table("kategoria").select("*").execute()
         if res_k.data:
-            st.table(pd.DataFrame(res_k.data))
+            df_k = pd.DataFrame(res_k.data)
+            st.subheader("Lista kategorii")
+            st.table(df_k)
+            
+            with st.expander("Usuń kategorię"):
+                with st.form("del_kat_form"):
+                    kat_to_del = st.selectbox("Wybierz kategorię do usunięcia", df_k['id'].tolist(),
+                                             format_func=lambda x: df_k[df_k['id']==x]['nazwa'].values[0])
+                    st.warning("Uwaga: Możesz usunąć tylko kategorię, która nie zawiera żadnych produktów.")
+                    if st.form_submit_button("Usuń kategorię"):
+                        try:
+                            supabase.table("kategoria").delete().eq("id", kat_to_del).execute()
+                            zapisz_dziennik("USUNIĘCIE KAT.", f"ID kategorii: {kat_to_del}")
+                            st.success("Kategoria została usunięta!")
+                            st.rerun()
+                        except:
+                            st.error("Nie można usunąć kategorii! Najpierw usuń wszystkie produkty przypisane do tej kategorii.")
     except Exception as e:
         st.error(f"Błąd: {e}")
 
@@ -190,4 +214,9 @@ elif menu == "📝 Notatki":
     if res_n.data:
         for n in res_n.data:
             ikona = "🚨" if n['wazne'] else "📌"
-            st.write(f"{ikona} **{n['data'][:10]}**: {n['tresc']}")
+            # Dodanie opcji usuwania notatki
+            col1, col2 = st.columns([0.9, 0.1])
+            col1.write(f"{ikona} **{n['data'][:10]}**: {n['tresc']}")
+            if col2.button("❌", key=n['id']):
+                supabase.table("notatki").delete().eq("id", n['id']).execute()
+                st.rerun()
