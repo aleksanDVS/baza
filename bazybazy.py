@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 from supabase import create_client, Client
+import plotly.express as px  # Nowa biblioteka do wykresów
 
 # --- 1. KONFIGURACJA ---
 st.set_page_config(page_title="Magazynier Cloud PRO", layout="wide", page_icon="📦")
@@ -25,8 +26,8 @@ def zapisz_dziennik(akcja, szczegoly):
     except Exception as e:
         st.error(f"Błąd zapisu w historii: {e}")
 
-# --- 3. MENU ---
-menu = st.sidebar.radio("Menu", ["📊 Dashboard", "📦 Magazyn", "💸 Sprzedaż", "📂 Kategorie", "📜 Historia"])
+# --- 3. MENU (Rozszerzone o Analizę) ---
+menu = st.sidebar.radio("Menu", ["📊 Dashboard", "📦 Magazyn", "💸 Sprzedaż", "📂 Kategorie", "📜 Historia", "📈 Analiza"])
 
 # --- 4. MODUŁY ---
 
@@ -135,7 +136,6 @@ elif menu == "📂 Kategorie":
 elif menu == "📜 Historia":
     st.title("Dziennik Zdarzeń")
     try:
-        # POBIERANIE DANYCH Z TABELI DZIENNIK
         res = supabase.table("dziennik").select("*").order("id", desc=True).execute()
         if res.data:
             st.dataframe(pd.DataFrame(res.data), use_container_width=True)
@@ -143,3 +143,38 @@ elif menu == "📜 Historia":
             st.info("Historia jest pusta.")
     except Exception as e:
         st.error(f"Nie można pobrać historii: {e}")
+
+# --- NOWY MODUŁ: ANALIZA ---
+elif menu == "📈 Analiza":
+    st.title("Analityka Sprzedaży")
+    try:
+        # Pobranie danych
+        res_s = supabase.table("sprzedaz").select("*").execute()
+        res_p = supabase.table("produkty").select("id, nazwa").execute()
+        df_s = pd.DataFrame(res_s.data)
+        df_p = pd.DataFrame(res_p.data)
+
+        if not df_s.empty and not df_p.empty:
+            # Łączenie danych, aby mieć nazwy produktów zamiast samych ID
+            df_merged = df_s.merge(df_p, left_on="produkt_id", right_on="id")
+            
+            # Agregacja zysku na produkt
+            profit_data = df_merged.groupby("nazwa")["suma"].sum().reset_index()
+
+            # Wykres interaktywny Plotly
+            fig = px.pie(profit_data, values='suma', names='nazwa', 
+                         title='Udział produktów w całkowitym przychodzie',
+                         hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
+            
+            st.plotly_chart(fig, use_container_width=True)
+
+            # Tabela podsumowująca
+            st.subheader("Zestawienie sprzedaży")
+            st.table(profit_data.sort_values(by="suma", ascending=False))
+
+            # Zapis do dziennika w Supabase
+            zapisz_dziennik("ANALIZA", "Wygenerowano raport sprzedaży")
+        else:
+            st.info("Brak danych do analizy. Sprzedaj coś najpierw!")
+    except Exception as e:
+        st.error(f"Błąd modułu analizy: {e}")
