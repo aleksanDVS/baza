@@ -22,8 +22,8 @@ def zapisz_dziennik(akcja, szczegoly):
             "szczegoly": szczegoly,
             "uzytkownik": "Admin"
         }).execute()
-    except:
-        pass 
+    except Exception as e:
+        st.error(f"Błąd zapisu w historii: {e}")
 
 # --- 3. MENU ---
 menu = st.sidebar.radio("Menu", ["📊 Dashboard", "📦 Magazyn", "💸 Sprzedaż", "📂 Kategorie", "📜 Historia"])
