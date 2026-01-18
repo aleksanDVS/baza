@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 from supabase import create_client, Client
-import plotly.express as px  # Nowa biblioteka do wykresów
+import plotly.express as px
 
 # --- 1. KONFIGURACJA ---
 st.set_page_config(page_title="Magazynier Cloud PRO", layout="wide", page_icon="📦")
@@ -15,7 +15,7 @@ except Exception as e:
     st.error("Błąd połączenia! Sprawdź Secrets w Streamlit Cloud.")
     st.stop()
 
-# --- 2. FUNKCJA LOGOWANIA ---
+# --- 2. FUNKCJA LOGOWANIA (HISTORIA W BAZIE) ---
 def zapisz_dziennik(akcja, szczegoly):
     try:
         supabase.table("dziennik").insert({
@@ -26,8 +26,16 @@ def zapisz_dziennik(akcja, szczegoly):
     except Exception as e:
         st.error(f"Błąd zapisu w historii: {e}")
 
-# --- 3. MENU (Rozszerzone o Analizę) ---
-menu = st.sidebar.radio("Menu", ["📊 Dashboard", "📦 Magazyn", "💸 Sprzedaż", "📂 Kategorie", "📜 Historia", "📈 Analiza"])
+# --- 3. MENU ---
+menu = st.sidebar.radio("Menu", [
+    "📊 Dashboard", 
+    "📦 Magazyn", 
+    "💸 Sprzedaż", 
+    "📂 Kategorie", 
+    "📜 Historia", 
+    "📈 Analiza", 
+    "📝 Notatki"
+])
 
 # --- 4. MODUŁY ---
 
@@ -134,7 +142,7 @@ elif menu == "📂 Kategorie":
         st.error(f"Błąd: {e}")
 
 elif menu == "📜 Historia":
-    st.title("Dziennik Zdarzeń")
+    st.title("Dziennik Zdarzeń (Logi w bazie)")
     try:
         res = supabase.table("dziennik").select("*").order("id", desc=True).execute()
         if res.data:
@@ -144,37 +152,42 @@ elif menu == "📜 Historia":
     except Exception as e:
         st.error(f"Nie można pobrać historii: {e}")
 
-# --- NOWY MODUŁ: ANALIZA ---
 elif menu == "📈 Analiza":
-    st.title("Analityka Sprzedaży")
+    st.title("Analityka i Wykresy")
     try:
-        # Pobranie danych
         res_s = supabase.table("sprzedaz").select("*").execute()
         res_p = supabase.table("produkty").select("id, nazwa").execute()
         df_s = pd.DataFrame(res_s.data)
         df_p = pd.DataFrame(res_p.data)
 
         if not df_s.empty and not df_p.empty:
-            # Łączenie danych, aby mieć nazwy produktów zamiast samych ID
             df_merged = df_s.merge(df_p, left_on="produkt_id", right_on="id")
-            
-            # Agregacja zysku na produkt
             profit_data = df_merged.groupby("nazwa")["suma"].sum().reset_index()
 
-            # Wykres interaktywny Plotly
-            fig = px.pie(profit_data, values='suma', names='nazwa', 
-                         title='Udział produktów w całkowitym przychodzie',
-                         hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
-            
+            fig = px.pie(profit_data, values='suma', names='nazwa', title='Udział w zysku', hole=0.4)
             st.plotly_chart(fig, use_container_width=True)
-
-            # Tabela podsumowująca
-            st.subheader("Zestawienie sprzedaży")
-            st.table(profit_data.sort_values(by="suma", ascending=False))
-
-            # Zapis do dziennika w Supabase
-            zapisz_dziennik("ANALIZA", "Wygenerowano raport sprzedaży")
+            
+            zapisz_dziennik("RAPORT", "Wygenerowano analizę sprzedaży")
         else:
-            st.info("Brak danych do analizy. Sprzedaj coś najpierw!")
+            st.info("Brak danych do analizy.")
     except Exception as e:
-        st.error(f"Błąd modułu analizy: {e}")
+        st.error(f"Błąd analizy: {e}")
+
+elif menu == "📝 Notatki":
+    st.title("Notatki Magazynowe (Nowa tabela)")
+    with st.form("note_form"):
+        tresc = st.text_area("Treść notatki")
+        ważne = st.checkbox("Ważne")
+        if st.form_submit_button("Zapisz w Supabase"):
+            if tresc:
+                supabase.table("notatki").insert({"tresc": tresc, "wazne": ważne}).execute()
+                zapisz_dziennik("NOTATKA", f"Dodano notatkę: {tresc[:20]}...")
+                st.success("Zapisano notatkę!")
+                st.rerun()
+
+    st.divider()
+    res_n = supabase.table("notatki").select("*").order("id", desc=True).execute()
+    if res_n.data:
+        for n in res_n.data:
+            ikona = "🚨" if n['wazne'] else "📌"
+            st.write(f"{ikona} **{n['data'][:10]}**: {n['tresc']}")
